@@ -3,11 +3,16 @@ package com.credera.adyentest;
 import com.adyen.Client;
 import com.adyen.enums.Environment;
 import com.adyen.model.Amount;
+import com.adyen.model.ThreeDS2RequestData;
 import com.adyen.model.checkout.*;
 import com.adyen.service.Checkout;
 import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+
 import io.javalin.Javalin;
 
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -27,19 +32,29 @@ public class IntegrationService
    public void startService(){
       System.out.println("Starting test integration server on port " + PORT + "...");
       Javalin app = Javalin.create().start(PORT);
-      app.get("/paymentmethods", ctx -> {
+      app.post("/paymentMethods", ctx -> {
          String paymentJson = new Gson().toJson(getPaymentMethods());
          ctx.result(paymentJson);
       });
-      app.post("/makepayment", ctx -> {
+      app.post("/payments", ctx -> {
          Map<String,String> body = new Gson().fromJson(ctx.body(), Map.class);
-         String resultJson = new Gson().toJson(makePayment(body));
-         ctx.result(resultJson);
+         Gson gson = new Gson();
+         String resultJson = gson.toJson(makePayment(body));
+         Map modifymap = gson.fromJson(resultJson, Map.class);
+         if(modifymap.get("action") != null){
+            ((Map)modifymap.get("action")).put("paymentData", modifymap.get("paymentData"));
+         }
+         ctx.result(gson.toJson(modifymap));
       });
-      app.post("/paymentdetails", ctx -> {
+      app.post("/payments/details", ctx -> {
          Map<String,String> body = new Gson().fromJson(ctx.body(), Map.class);
-         String resultJson = new Gson().toJson(addDetails(body));
-         ctx.result(resultJson);
+         Gson gson = new Gson();
+         String resultJson = gson.toJson(addDetails(body));
+         Map modifymap = gson.fromJson(resultJson, Map.class);
+         if(modifymap.get("action") != null){
+            ((Map)modifymap.get("action")).put("paymentData", modifymap.get("paymentData"));
+         }
+         ctx.result(gson.toJson(modifymap));
       });
    }
 
@@ -68,17 +83,39 @@ public class IntegrationService
       PaymentsRequest paymentsRequest = new PaymentsRequest();
       paymentsRequest.setMerchantAccount(MERCHANT_ACCOUNT);
       Amount amount = new Amount();
-      amount.setCurrency(args.get("currency"));
-      amount.setValue((long)(Float.parseFloat(args.get("amount")) * 100));
+
+      Gson gson = new Gson();
+      JsonObject bodyObj = gson.toJsonTree(args).getAsJsonObject();
+
+      JsonObject amountObj = bodyObj.getAsJsonObject("amount");
+      JsonObject paymentMethodObj = bodyObj.getAsJsonObject("paymentMethod");
+      JsonObject addtlDataObj = bodyObj.getAsJsonObject("additionalData");
+
+      amount.setCurrency(amountObj.get("currency").getAsString());
+      amount.setValue((long)(Float.parseFloat(amountObj.get("value").getAsString())));
+      System.out.println("Value  " + amount.getDecimalValue() + ", " + amount.getValue());
       paymentsRequest.setAmount(amount);
-      String encryptedCardNumber = args.get("encryptedCardNumber");//"adyenjs_0_1_18$...encryptedCardNumber";
-      String encryptedExpiryMonth = args.get("encryptedExpiryMonth");//"adyenjs_0_1_18$...encryptedExpiryMonth";
-      String encryptedExpiryYear = args.get("encryptedExpiryYear");//"adyenjs_0_1_18$...encryptedExpiryYear";
-      String encryptedSecurityCode = args.get("encryptedSecurityCode");//"adyenjs_0_1_18$...encryptedSecurityCode";
-      String holderName = args.get("holderName");
-      paymentsRequest.setReference(args.get("referenceText"));
+
+      // Currently defaulted to true on the request from app
+      boolean allow3DS2 = addtlDataObj.get("allow3DS2").getAsBoolean();
+      if (allow3DS2) {
+         paymentsRequest.setChannel(PaymentsRequest.ChannelEnum.fromValue(bodyObj.get("channel").getAsString()));
+         paymentsRequest.setShopperIP("192.168.66.76");
+         ThreeDS2RequestData threeDS2RequestData = new ThreeDS2RequestData();
+         paymentsRequest.setThreeDS2RequestData(threeDS2RequestData);
+         Map <String,String> additionalData = new HashMap<>();
+         additionalData.put("allow3DS2", "true");
+         paymentsRequest.setAdditionalData(additionalData);
+      }
+
+      String encryptedCardNumber = paymentMethodObj.get("encryptedCardNumber").getAsString();//"adyenjs_0_1_18$...encryptedCardNumber";
+      String encryptedExpiryMonth = paymentMethodObj.get("encryptedExpiryMonth").getAsString();//"adyenjs_0_1_18$...encryptedExpiryMonth";
+      String encryptedExpiryYear = paymentMethodObj.get("encryptedExpiryYear").getAsString();//"adyenjs_0_1_18$...encryptedExpiryYear";
+      String encryptedSecurityCode = paymentMethodObj.get("encryptedSecurityCode").getAsString();//"adyenjs_0_1_18$...encryptedSecurityCode";
+      String holderName = "John Smith";// paymentMethodObj.get("holderName").getAsString();
+      paymentsRequest.setReference(bodyObj.get("reference").getAsString());
       paymentsRequest.addEncryptedCardData(encryptedCardNumber, encryptedExpiryMonth, encryptedExpiryYear, encryptedSecurityCode, holderName);
-      paymentsRequest.setReturnUrl(args.get("returnUrl"));
+      paymentsRequest.setReturnUrl(bodyObj.get("returnUrl").getAsString());
       PaymentsResponse paymentsResponse = checkout.payments(paymentsRequest);
       return paymentsResponse;
    }
@@ -89,8 +126,17 @@ public class IntegrationService
 
       Checkout checkout = new Checkout(client);
       PaymentsDetailsRequest paymentDetailsRequest = new PaymentsDetailsRequest();
-      paymentDetailsRequest.setDetails(details);
+      Gson gson = new Gson();
+      JsonObject detailsObj = gson.toJsonTree(details.get("details")).getAsJsonObject();
+      Map<String,String> detailsMap = new Gson().fromJson(detailsObj,Map.class);
+      paymentDetailsRequest.setDetails(detailsMap);
+      paymentDetailsRequest.setPaymentData(details.get("paymentData"));
       PaymentsResponse paymentsResponse = checkout.paymentsDetails(paymentDetailsRequest);
       return paymentsResponse;
+   }
+
+   private void challengeShopper()
+   {
+      return;
    }
 }
